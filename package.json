@@ -1,0 +1,11 @@
+{
+  "name": "universal-ai-api-hub",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch server.js",
+    "start": "node server.js"
+  },
+  "engines": { "node": ">=22.5.0" }
+}

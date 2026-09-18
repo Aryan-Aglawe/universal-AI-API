@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700">
+  <rect width="1200" height="700" fill="#07111f"/>
+  <rect x="35" y="35" width="1130" height="630" rx="30" fill="#0d1b2d" stroke="#55e6a5" stroke-width="4"/>
+  <rect x="90" y="105" width="16" height="490" rx="8" fill="#55e6a5"/>
+  <text x="150" y="190" fill="#55e6a5" font-family="Arial, sans-serif" font-size="31" font-weight="700" letter-spacing="5">UNIVERSAL AI LABS</text>
+  <text x="150" y="300" fill="#edf4ff" font-family="Arial, sans-serif" font-size="72" font-weight="700">Aryan Aglawe</text>
+  <text x="155" y="360" fill="#b9c9dc" font-family="Arial, sans-serif" font-size="34">AI Developer</text>
+  <line x1="150" y1="410" x2="1080" y2="410" stroke="#314763" stroke-width="2"/>
+  <text x="155" y="475" fill="#edf4ff" font-family="Arial, sans-serif" font-size="31">+91 98765 43210</text>
+  <text x="155" y="530" fill="#edf4ff" font-family="Arial, sans-serif" font-size="31">aryan@universalailabs.com</text>
+  <text x="155" y="585" fill="#edf4ff" font-family="Arial, sans-serif" font-size="31">www.universalailabs.com</text>
+</svg>
