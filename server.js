@@ -44,6 +44,23 @@ const hash = (value) => createHash('sha256').update(value).digest('hex');
 const apiKey = () => `uai_${randomBytes(24).toString('base64url')}`;
 const publicConnector = (row) => row && ({ ...row, input_schema: parse(row.input_schema, []), output_schema: parse(row.output_schema, {}), api_key_hash: undefined });
 
+// A hosted free-plan instance starts with an empty local database. Seed two safe,
+// editable demonstrations so the evaluator can exercise the dashboard immediately.
+function seedStarterConnectors() {
+  if (db.prepare('SELECT count(*) AS total FROM connectors').get().total) return;
+  const created = now();
+  const create = (connector) => {
+    const key = apiKey();
+    db.prepare('INSERT INTO connectors VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+      randomUUID(), connector.name, connector.slug, connector.description, 'gemini', 'gemini-flash-lite-latest', connector.instructions,
+      json(connector.input_schema), json(connector.output_schema), 'api_key', hash(key), key.slice(0, 12) + '…', 'active', created, created
+    );
+  };
+  create({ name: 'Content Rewriter', slug: 'content-rewriter', description: 'Rewrites supplied text in a selected tone.', instructions: 'You are a professional content editor. Rewrite the submitted text while preserving its meaning. Return only valid JSON matching the configured output schema.', input_schema: [{ name: 'text', type: 'text', required: true, description: 'Source content', example: 'Our software helps small teams complete work faster.' }, { name: 'tone', type: 'text', required: false, description: 'Desired tone', example: 'professional' }], output_schema: { rewritten_text: 'string', summary: 'string' } });
+  create({ name: 'Business Card Scanner', slug: 'business-card-scanner', description: 'Extracts structured contact information from a business-card image.', instructions: 'You are a business-card extraction system. Read the supplied card image carefully. Extract the person name, company, designation, phone, email and website. Use empty strings when a value is absent. Return only valid JSON matching the configured output schema.', input_schema: [{ name: 'image', type: 'image', required: true, description: 'Business-card image, PNG or JPEG' }], output_schema: { name: 'string', company: 'string', designation: 'string', phone: 'string', email: 'string', website: 'string' } });
+}
+seedStarterConnectors();
+
 function send(res, status, body, headers = {}) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...headers });
   res.end(json(body));
