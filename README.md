@@ -25,7 +25,7 @@ The app stores its local database in `data/api-hub.db`. The default dashboard is
 1. Push this repository to a private GitHub repository. Do not commit `.env`.
 2. In Render, create a new Blueprint and select the repository. It reads `render.yaml`.
 3. Enter `GEMINI_API_KEY` as a Render environment secret. Set `PUBLIC_URL` to the deployment URL after its first deploy.
-4. Use the provided persistent disk. Without a disk, the SQLite connector and usage-log data will be lost when the service restarts.
+4. On Render's free plan, the local SQLite connector and usage-log data can be lost when the service restarts. For final evaluation, use a paid persistent disk or replace SQLite with a hosted database such as Supabase Postgres.
 5. Open the generated public URL and verify `/api/health`, `/docs/content-rewriter`, and one authenticated `POST /v1/...` request.
 
 ## Demo connectors
