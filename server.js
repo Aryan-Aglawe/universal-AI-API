@@ -44,23 +44,60 @@ const parse = (value, fallback) => { try { return JSON.parse(value); } catch { r
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const apiKey = () => `uai_${randomBytes(24).toString('base64url')}`;
 const publicConnector = (row) => row && ({ ...row, input_schema: parse(row.input_schema, []), output_schema: parse(row.output_schema, {}), api_key_hash: undefined });
+const SUPABASE_URL = (process.env.SUPABASE_URL || '').replace(/\/$/, '');
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const supabaseEnabled = Boolean(SUPABASE_URL && SUPABASE_KEY);
+
+async function supabase(table, method = 'GET', query = '', payload) {
+  if (!supabaseEnabled) return null;
+  const response = await fetch(`${SUPABASE_URL}/rest/v1/${table}${query}`, {
+    method,
+    headers: { apikey: SUPABASE_KEY, authorization: `Bearer ${SUPABASE_KEY}`, 'content-type': 'application/json', prefer: 'resolution=merge-duplicates,return=minimal' },
+    body: payload === undefined ? undefined : json(payload), signal: AbortSignal.timeout(8000)
+  });
+  if (!response.ok) throw new Error(`Supabase ${table} request failed (${response.status})`);
+  return response.status === 204 ? null : response.json();
+}
+function remoteConnector(row) { return { ...row, input_schema: typeof row.input_schema === 'string' ? parse(row.input_schema, []) : row.input_schema, output_schema: typeof row.output_schema === 'string' ? parse(row.output_schema, {}) : row.output_schema }; }
+function remoteLog(row) { return { ...row, success: Boolean(row.success) }; }
+function syncConnector(row) { return supabase('connectors', 'POST', '?on_conflict=id', remoteConnector(row)).catch(error => console.error('Supabase connector sync:', error.message)); }
+function syncLog(row) { return supabase('request_logs', 'POST', '?on_conflict=id', remoteLog(row)).catch(error => console.error('Supabase log sync:', error.message)); }
+function removeRemoteConnector(id) { return supabase('connectors', 'DELETE', `?id=eq.${encodeURIComponent(id)}`).catch(error => console.error('Supabase connector delete:', error.message)); }
+async function hydrateSupabase() {
+  if (!supabaseEnabled) return;
+  try {
+    const connectors = await supabase('connectors', 'GET', '?select=*');
+    if (connectors?.length) {
+      db.exec('DELETE FROM request_logs; DELETE FROM connectors;');
+      const insert = db.prepare('INSERT INTO connectors VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+      for (const row of connectors) insert.run(row.id, row.name, row.slug, row.description, row.provider, row.model, row.instructions, json(row.input_schema), json(row.output_schema), row.auth_mode, row.api_key_hash, row.api_key_preview, row.status, row.created_at, row.updated_at);
+      const logs = await supabase('request_logs', 'GET', '?select=*');
+      const insertLog = db.prepare('INSERT INTO request_logs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+      for (const row of logs || []) insertLog.run(row.id, row.connector_id, row.success ? 1 : 0, row.status_code, row.provider, row.model, row.duration_ms, row.input_tokens, row.output_tokens, row.total_tokens, row.estimated_cost, row.error_type, row.error_message, row.created_at);
+    } else {
+      for (const row of db.prepare('SELECT * FROM connectors').all()) await syncConnector(row);
+    }
+  } catch (error) { console.error('Supabase hydration skipped:', error.message); }
+}
 
 // A hosted free-plan instance starts with an empty local database. Seed two safe,
 // editable demonstrations so the evaluator can exercise the dashboard immediately.
 function seedStarterConnectors() {
-  if (db.prepare('SELECT count(*) AS total FROM connectors').get().total) return;
   const created = now();
   const create = (connector) => {
+    if (db.prepare('SELECT 1 FROM connectors WHERE slug=?').get(connector.slug)) return;
     const key = apiKey();
     db.prepare('INSERT INTO connectors VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
-      randomUUID(), connector.name, connector.slug, connector.description, 'gemini', 'gemini-flash-lite-latest', connector.instructions,
+      randomUUID(), connector.name, connector.slug, connector.description, connector.provider || 'gemini', connector.model || 'gemini-flash-lite-latest', connector.instructions,
       json(connector.input_schema), json(connector.output_schema), 'api_key', hash(key), key.slice(0, 12) + '…', 'active', created, created
     );
   };
   create({ name: 'Content Rewriter', slug: 'content-rewriter', description: 'Rewrites supplied text in a selected tone.', instructions: 'You are a professional content editor. Rewrite the submitted text while preserving its meaning. Return only valid JSON matching the configured output schema.', input_schema: [{ name: 'text', type: 'text', required: true, description: 'Source content', example: 'Our software helps small teams complete work faster.' }, { name: 'tone', type: 'text', required: false, description: 'Desired tone', example: 'professional' }], output_schema: { rewritten_text: 'string', summary: 'string' } });
   create({ name: 'Business Card Scanner', slug: 'business-card-scanner', description: 'Extracts structured contact information from a business-card image.', instructions: 'You are a business-card extraction system. Read the supplied card image carefully. Extract the person name, company, designation, phone, email and website. Use empty strings when a value is absent. Return only valid JSON matching the configured output schema.', input_schema: [{ name: 'image', type: 'image', required: true, description: 'Business-card image, PNG or JPEG' }], output_schema: { name: 'string', company: 'string', designation: 'string', phone: 'string', email: 'string', website: 'string' } });
+  if (process.env.GROQ_API_KEY) create({ name: 'Text Summarizer', slug: 'text-summarizer', description: 'Summarizes long text using Groq.', provider: 'groq', model: 'openai/gpt-oss-20b', instructions: 'You are a concise analyst. Summarize the submitted text and identify its sentiment. Return only valid JSON matching the configured output schema.', input_schema: [{ name: 'text', type: 'text', required: true, description: 'Text to summarize', example: 'Artificial intelligence can automate repetitive tasks and support better decisions.' }], output_schema: { summary: 'string', sentiment: 'string' } });
 }
 seedStarterConnectors();
+void hydrateSupabase();
 
 function send(res, status, body, headers = {}) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...headers });
@@ -156,7 +193,9 @@ async function askProvider(connector, input) {
   return { data: extractJson(data.candidates?.[0]?.content?.parts?.[0]?.text), usage: { input_tokens: data.usageMetadata?.promptTokenCount, output_tokens: data.usageMetadata?.candidatesTokenCount, total_tokens: data.usageMetadata?.totalTokenCount } };
 }
 function logRequest(connector, outcome) {
-  db.prepare('INSERT INTO request_logs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(randomUUID(), connector.id, outcome.success ? 1 : 0, outcome.status, connector.provider, connector.model, outcome.duration, outcome.usage?.prompt_tokens ?? outcome.usage?.input_tokens ?? null, outcome.usage?.completion_tokens ?? outcome.usage?.output_tokens ?? null, outcome.usage?.total_tokens ?? null, null, outcome.type || null, outcome.error || null, now());
+  const row = { id: randomUUID(), connector_id: connector.id, success: outcome.success ? 1 : 0, status_code: outcome.status, provider: connector.provider, model: connector.model, duration_ms: outcome.duration, input_tokens: outcome.usage?.prompt_tokens ?? outcome.usage?.input_tokens ?? null, output_tokens: outcome.usage?.completion_tokens ?? outcome.usage?.output_tokens ?? null, total_tokens: outcome.usage?.total_tokens ?? null, estimated_cost: null, error_type: outcome.type || null, error_message: outcome.error || null, created_at: now() };
+  db.prepare('INSERT INTO request_logs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(...Object.values(row));
+  void syncLog(row);
 }
 async function invoke(connector, input) {
   const started = Date.now();
@@ -185,10 +224,10 @@ const server = http.createServer(async (req, res) => {
     if (segments[0] === 'v1' && segments[1] && req.method === 'POST') { const c = db.prepare('SELECT * FROM connectors WHERE slug = ?').get(segments[1]); if (!c || c.status !== 'active') return send(res, 404, { success: false, data: null, error: 'Connector not found or disabled' }); const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || req.headers['x-api-key']; if (c.auth_mode === 'api_key' && (!token || hash(token) !== c.api_key_hash)) return send(res, 401, { success: false, data: null, error: 'Invalid API key' }); const result = await invoke(c, await body(req)); return send(res, 200, result); }
     if (url.pathname.startsWith('/api/')) assertAdmin(req);
     if (req.method === 'GET' && url.pathname === '/api/connectors') return send(res, 200, db.prepare(`SELECT c.*, count(l.id) AS requests FROM connectors c LEFT JOIN request_logs l ON l.connector_id=c.id GROUP BY c.id ORDER BY c.created_at DESC`).all().map(publicConnector));
-    if (req.method === 'POST' && url.pathname === '/api/connectors') { const value = await body(req); validateConnector(value); const key = apiKey(); const row = { id: randomUUID(), name: value.name, slug: value.slug, description: value.description, provider: value.provider, model: value.model, instructions: value.instructions, input_schema: json(value.input_schema), output_schema: json(value.output_schema), auth_mode: value.auth_mode || 'api_key', api_key_hash: hash(key), api_key_preview: key.slice(0, 12) + '…', status: value.status || 'active', created_at: now(), updated_at: now() }; db.prepare('INSERT INTO connectors VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(...Object.values(row)); return send(res, 201, { connector: publicConnector(row), api_key: key }); }
-    if (segments[0] === 'api' && segments[1] === 'connectors' && segments[2] && req.method === 'PATCH') { const old = db.prepare('SELECT * FROM connectors WHERE id = ?').get(segments[2]); if (!old) return send(res, 404, { error: 'Connector not found' }); const patch = await body(req); validateConnector(patch, true); const merged = { ...old, ...patch, input_schema: patch.input_schema === undefined ? old.input_schema : json(patch.input_schema), output_schema: patch.output_schema === undefined ? old.output_schema : json(patch.output_schema), updated_at: now() }; db.prepare('UPDATE connectors SET name=?,slug=?,description=?,provider=?,model=?,instructions=?,input_schema=?,output_schema=?,auth_mode=?,status=?,updated_at=? WHERE id=?').run(merged.name, merged.slug, merged.description, merged.provider, merged.model, merged.instructions, merged.input_schema, merged.output_schema, merged.auth_mode, merged.status, merged.updated_at, old.id); return send(res, 200, publicConnector(merged)); }
-    if (segments[0] === 'api' && segments[1] === 'connectors' && segments[2] && req.method === 'DELETE') { db.prepare('DELETE FROM connectors WHERE id = ?').run(segments[2]); return send(res, 204, {}); }
-    if (segments[0] === 'api' && segments[1] === 'connectors' && segments[2] && segments[3] === 'rotate-key' && req.method === 'POST') { const c = db.prepare('SELECT * FROM connectors WHERE id=?').get(segments[2]); if (!c) return send(res, 404, { error: 'Connector not found' }); const key = apiKey(); db.prepare('UPDATE connectors SET api_key_hash=?, api_key_preview=?, updated_at=? WHERE id=?').run(hash(key), key.slice(0, 12) + '…', now(), c.id); return send(res, 200, { api_key: key, message: 'Save this key now. The old key no longer works.' }); }
+    if (req.method === 'POST' && url.pathname === '/api/connectors') { const value = await body(req); validateConnector(value); const key = apiKey(); const row = { id: randomUUID(), name: value.name, slug: value.slug, description: value.description, provider: value.provider, model: value.model, instructions: value.instructions, input_schema: json(value.input_schema), output_schema: json(value.output_schema), auth_mode: value.auth_mode || 'api_key', api_key_hash: hash(key), api_key_preview: key.slice(0, 12) + '…', status: value.status || 'active', created_at: now(), updated_at: now() }; db.prepare('INSERT INTO connectors VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(...Object.values(row)); void syncConnector(row); return send(res, 201, { connector: publicConnector(row), api_key: key }); }
+    if (segments[0] === 'api' && segments[1] === 'connectors' && segments[2] && req.method === 'PATCH') { const old = db.prepare('SELECT * FROM connectors WHERE id = ?').get(segments[2]); if (!old) return send(res, 404, { error: 'Connector not found' }); const patch = await body(req); validateConnector(patch, true); const merged = { ...old, ...patch, input_schema: patch.input_schema === undefined ? old.input_schema : json(patch.input_schema), output_schema: patch.output_schema === undefined ? old.output_schema : json(patch.output_schema), updated_at: now() }; db.prepare('UPDATE connectors SET name=?,slug=?,description=?,provider=?,model=?,instructions=?,input_schema=?,output_schema=?,auth_mode=?,status=?,updated_at=? WHERE id=?').run(merged.name, merged.slug, merged.description, merged.provider, merged.model, merged.instructions, merged.input_schema, merged.output_schema, merged.auth_mode, merged.status, merged.updated_at, old.id); void syncConnector(merged); return send(res, 200, publicConnector(merged)); }
+    if (segments[0] === 'api' && segments[1] === 'connectors' && segments[2] && req.method === 'DELETE') { db.prepare('DELETE FROM connectors WHERE id = ?').run(segments[2]); void removeRemoteConnector(segments[2]); return send(res, 204, {}); }
+    if (segments[0] === 'api' && segments[1] === 'connectors' && segments[2] && segments[3] === 'rotate-key' && req.method === 'POST') { const c = db.prepare('SELECT * FROM connectors WHERE id=?').get(segments[2]); if (!c) return send(res, 404, { error: 'Connector not found' }); const key = apiKey(); const updatedAt = now(); const preview = key.slice(0, 12) + '…'; db.prepare('UPDATE connectors SET api_key_hash=?, api_key_preview=?, updated_at=? WHERE id=?').run(hash(key), preview, updatedAt, c.id); void syncConnector({ ...c, api_key_hash: hash(key), api_key_preview: preview, updated_at: updatedAt }); return send(res, 200, { api_key: key, message: 'Save this key now. The old key no longer works.' }); }
     if (segments[0] === 'api' && segments[1] === 'connectors' && segments[2] && segments[3] === 'test' && req.method === 'POST') { const c = db.prepare('SELECT * FROM connectors WHERE id = ?').get(segments[2]); if (!c) return send(res, 404, { error: 'Connector not found' }); return send(res, 200, await invoke(c, await body(req))); }
     if (segments[0] === 'api' && segments[1] === 'connectors' && segments[2] && segments[3] === 'stats' && req.method === 'GET') { const rows = db.prepare('SELECT * FROM request_logs WHERE connector_id=? ORDER BY created_at DESC LIMIT 25').all(segments[2]); const summary = db.prepare('SELECT count(*) AS total, sum(success) AS successful, count(*)-sum(success) AS failed, round(avg(duration_ms)) AS avg_response_ms, max(created_at) AS last_used FROM request_logs WHERE connector_id=?').get(segments[2]); return send(res, 200, { summary, logs: rows }); }
     return send(res, 404, { error: 'Route not found' });

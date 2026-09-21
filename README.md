@@ -25,7 +25,7 @@ The app stores its local database in `data/api-hub.db`. The default dashboard is
 1. Push this repository to a private GitHub repository. Do not commit `.env`.
 2. In Render, create a new Blueprint and select the repository. It reads `render.yaml`.
 3. Enter `GEMINI_API_KEY` as a Render environment secret. Set `PUBLIC_URL` to the deployment URL after its first deploy.
-4. On Render's free plan, the local SQLite connector and usage-log data can be lost when the service restarts. For final evaluation, use a paid persistent disk or replace SQLite with a hosted database such as Supabase Postgres.
+4. Add `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` as Render secrets to persist connectors and logs in Supabase. Run the setup SQL supplied in the project walkthrough before deploying this integration.
 5. Open the generated public URL and verify `/api/health`, `/docs/content-rewriter`, and one authenticated `POST /v1/...` request.
 
 ## Demo connectors
@@ -33,3 +33,5 @@ The app stores its local database in `data/api-hub.db`. The default dashboard is
 **Content Rewriter**: Gemini / `gemini-flash-lite-latest`; text + optional tone -> `rewritten_text`, `summary`.
 
 **Business Card Scanner**: Gemini / `gemini-flash-lite-latest`; multipart `image` file -> name, company, designation, phone, email, website. Use the test console's file picker or a multipart cURL request.
+
+**Text Summarizer**: Groq / `openai/gpt-oss-20b`; text -> structured summary and sentiment. It is seeded automatically when `GROQ_API_KEY` is configured.
