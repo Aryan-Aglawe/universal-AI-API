@@ -194,4 +194,5 @@ const server = http.createServer(async (req, res) => {
     return send(res, 404, { error: 'Route not found' });
   } catch (error) { console.error(error); return send(res, error.status || 500, { success: false, data: null, error: error.status && error.status < 500 ? error.message : 'The request could not be completed' }); }
 });
-server.listen(PORT, () => console.log(`Universal AI API Hub listening on http://localhost:${PORT}`));
+// Bind explicitly to all interfaces so Render's internal health checker can reach us.
+server.listen(PORT, '0.0.0.0', () => console.log(`Universal AI API Hub listening on port ${PORT}`));
